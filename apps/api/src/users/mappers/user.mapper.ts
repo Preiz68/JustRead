@@ -1,5 +1,5 @@
 import { User } from '@/generated/prisma/client';
-import { AuthenticatedUser } from '@justread/shared';
+import { AuthenticatedUser, TokenSubject } from '@justread/shared';
 
 export class UserMapper {
   static toAuthenticatedUser(user: User): AuthenticatedUser {
@@ -12,6 +12,14 @@ export class UserMapper {
       bio: user.bio,
       emailVerified: user.emailVerified,
       createdAt: user.createdAt,
+    };
+  }
+
+  static toTokenSubject(user: User): TokenSubject {
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
     };
   }
 }

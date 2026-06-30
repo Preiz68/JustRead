@@ -1,13 +1,20 @@
-import { ConflictException, Injectable } from '@nestjs/common';
-import { RegisterDto } from './dto/register.dto';
-import { AuthResponse } from '@justread/shared';
-import { UsersService } from '@/users/users.service';
-import { TokenService } from '@/token/token.service';
-import bcrypt from 'bcrypt';
-import { UserMapper } from '@/users/mappers/user.mapper';
-import securityConfig from '@/config/security.config';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigType } from '@nestjs/config';
-import { Inject } from '@nestjs/common';
+import bcrypt from 'bcrypt';
+
+import securityConfig from '@/config/security.config';
+import { TokenService } from '@/token/token.service';
+import { User } from '@/generated/prisma/client';
+import { UsersService } from '@/users/users.service';
+import { UserMapper } from '@/users/mappers/user.mapper';
+
+import { AuthenticatedUser, AuthResponse } from '@justread/shared';
+import { RegisterDto } from './dto/register.dto';
 
 type SecurityConfig = ConfigType<typeof securityConfig>;
 
@@ -16,6 +23,7 @@ export class AuthService {
   constructor(
     private readonly usersService: UsersService,
     private readonly tokenService: TokenService,
+
     @Inject(securityConfig.KEY)
     private readonly securityConfig: SecurityConfig,
   ) {}
@@ -23,14 +31,41 @@ export class AuthService {
   private async hashPassword(password: string): Promise<string> {
     return bcrypt.hash(password, this.securityConfig.bcryptRounds);
   }
+
+  private async comparePassword(
+    password: string,
+    passwordHash: string,
+  ): Promise<boolean> {
+    return bcrypt.compare(password, passwordHash);
+  }
+
+  private async createAuthResponse(user: User): Promise<AuthResponse> {
+    const subject = UserMapper.toTokenSubject(user);
+
+    const tokens = await this.tokenService.generateTokenPair(subject);
+
+    const refreshTokenHash = await this.tokenService.hashRefreshToken(
+      tokens.refreshToken,
+    );
+
+    await this.usersService.updateRefreshToken(user.id, refreshTokenHash);
+
+    return {
+      user: UserMapper.toAuthenticatedUser(user),
+      ...tokens,
+    };
+  }
+
+  private static readonly DUMMY_HASH =
+    '$2b$10$vSfZMCM5fpqdA7eV7ljDQOz.ETPNJFZJtOxFqn2A92eJbHu5HxKFu';
+
   async register(dto: RegisterDto): Promise<AuthResponse> {
-    // 1. Check email
     const existingEmail = await this.usersService.findByEmail(dto.email);
 
     if (existingEmail) {
       throw new ConflictException('Email is already in use.');
     }
-    // 2. Check username
+
     const existingUsername = await this.usersService.findByUsername(
       dto.username,
     );
@@ -38,33 +73,48 @@ export class AuthService {
     if (existingUsername) {
       throw new ConflictException('Username is already taken.');
     }
-    // 3. Hash password
-    const passwordHash = await this.hashPassword(dto.password);
-    // 4. Create user
+
+    const { password, ...userData } = dto;
+    const passwordHash = await this.hashPassword(password);
+
     const user = await this.usersService.create({
-      email: dto.email,
-      username: dto.username,
-      displayName: dto.displayName,
+      ...userData,
       passwordHash,
     });
-    // 5. Generate tokens
-    const subject = {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-    };
-    const tokens = await this.tokenService.generateTokenPair(subject);
 
-    // 6. Store hashed refresh token
-    const refreshTokenHash = await this.tokenService.hashRefreshToken(
-      tokens.refreshToken,
+    return this.createAuthResponse(user);
+  }
+
+  async validateUser(
+    email: string,
+    password: string,
+  ): Promise<AuthenticatedUser> {
+    const user = await this.usersService.findByEmail(email);
+
+    if (!user || !user.passwordHash) {
+      await bcrypt.compare(password, AuthService.DUMMY_HASH);
+      throw new UnauthorizedException('Invalid email or password.');
+    }
+
+    const passwordMatches = await this.comparePassword(
+      password,
+      user.passwordHash,
     );
-    await this.usersService.updateRefreshToken(user.id, refreshTokenHash);
-    // 7. Return response
-    return {
-      user: UserMapper.toAuthenticatedUser(user),
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
+
+    if (!passwordMatches) {
+      throw new UnauthorizedException('Invalid email or password.');
+    }
+
+    return UserMapper.toAuthenticatedUser(user);
+  }
+
+  async login(authenticatedUser: AuthenticatedUser): Promise<AuthResponse> {
+    const user = await this.usersService.findById(authenticatedUser.id);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    return this.createAuthResponse(user);
   }
 }
