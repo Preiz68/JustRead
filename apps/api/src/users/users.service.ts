@@ -43,7 +43,7 @@ export class UsersService {
     });
   }
 
-  async updateRefreshToken(userId: string, refreshTokenHash: string) {
+  async updateRefreshToken(userId: string, refreshTokenHash: string | null) {
     return this.prismaService.user.update({
       where: {
         id: userId,

@@ -20,6 +20,8 @@ type SecurityConfig = ConfigType<typeof securityConfig>;
 
 @Injectable()
 export class AuthService {
+  private static readonly DUMMY_HASH =
+    '$2b$10$vSfZMCM5fpqdA7eV7ljDQOz.ETPNJFZJtOxFqn2A92eJbHu5HxKFu';
   constructor(
     private readonly usersService: UsersService,
     private readonly tokenService: TokenService,
@@ -55,9 +57,6 @@ export class AuthService {
       ...tokens,
     };
   }
-
-  private static readonly DUMMY_HASH =
-    '$2b$10$vSfZMCM5fpqdA7eV7ljDQOz.ETPNJFZJtOxFqn2A92eJbHu5HxKFu';
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
     const existingEmail = await this.usersService.findByEmail(dto.email);
@@ -116,5 +115,35 @@ export class AuthService {
     }
 
     return this.createAuthResponse(user);
+  }
+
+  async refreshTokens(
+    userId: string,
+    refreshToken: string,
+  ): Promise<AuthResponse> {
+    const user = await this.usersService.findById(userId);
+
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
+    if (!user.refreshTokenHash) {
+      throw new UnauthorizedException();
+    }
+
+    const refreshTokenMatches = await this.tokenService.compareRefreshToken(
+      refreshToken,
+      user.refreshTokenHash,
+    );
+
+    if (!refreshTokenMatches) {
+      throw new UnauthorizedException();
+    }
+
+    return this.createAuthResponse(user);
+  }
+
+  async logout(userId: string): Promise<void> {
+    await this.usersService.updateRefreshToken(userId, null);
   }
 }
